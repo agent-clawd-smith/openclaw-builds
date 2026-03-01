@@ -99,9 +99,21 @@ function post(hostname, path, headers, body) {
 async function describeImage(imgPath) {
   if (!ANTHROPIC_KEY) return '[image - no API key]';
   try {
-    const imgData = fs.readFileSync(imgPath).toString('base64');
+    // Convert HEIC to JPEG — Claude can't read HEIC
     const ext = path.extname(imgPath).toLowerCase();
-    const mediaType = ext === '.png' ? 'image/png' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+    if (ext === '.heic' || ext === '.heif') {
+      const jpgPath = imgPath.replace(/\.hei[cf]$/i, '_converted.jpg');
+      const conv = spawnSync('sips', ['-s', 'format', 'jpeg', imgPath, '--out', jpgPath], { encoding: 'utf8' });
+      if (conv.status === 0 && fs.existsSync(jpgPath)) {
+        imgPath = jpgPath;
+      } else {
+        log(`HEIC conversion failed: ${conv.stderr}`);
+        return '[image - HEIC conversion failed]';
+      }
+    }
+    const finalExt = path.extname(imgPath).toLowerCase();
+    const imgData = fs.readFileSync(imgPath).toString('base64');
+    const mediaType = finalExt === '.png' ? 'image/png' : finalExt === '.gif' ? 'image/gif' : finalExt === '.webp' ? 'image/webp' : 'image/jpeg';
     
     const result = await post('api.anthropic.com', '/v1/messages', {
       'Content-Type': 'application/json',
