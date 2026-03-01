@@ -4,7 +4,7 @@
 #   firecrawl.sh search "your query" [limit]
 #   firecrawl.sh scrape "https://example.com"
 
-FIRECRAWL_API_KEY=$(python3 -c "import json; c=json.load(open('$HOME/.openclaw/openclaw.json')); print(c['tools']['web']['firecrawl']['apiKey'])")
+FIRECRAWL_API_KEY=$(python3 -c "import json; c=json.load(open('$HOME/.openclaw/secrets.json')); print(c['firecrawl']['apiKey'])")
 BASE="https://api.firecrawl.dev/v1"
 
 case "$1" in
