@@ -5,3 +5,7 @@ agentshare_inbox/
 screenshot_temp*
 latest_drop*
 imsg_photo*
+family-contacts.json
+agentshare_inbox/
+*.jpeg
+*.jpg
