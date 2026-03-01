@@ -13,11 +13,21 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const https = require('https');
 
 const CONTACTS_FILE = path.join(process.env.HOME, '.openclaw/workspace/family-contacts.json');
 const STATE_FILE = '/tmp/imessage-processor-state.json';
 const POLL_INTERVAL = 10000;
+
+// Generate a stable session ID per identifier so each person
+// gets their own session in the main agent (no lock conflicts with webchat)
+const crypto = require('crypto');
+function stableSessionId(identifier) {
+  // UUID v5-style: deterministic UUID from identifier string
+  const hash = crypto.createHash('sha1').update('imessage:' + identifier).digest('hex');
+  return [hash.slice(0,8), hash.slice(8,12), '5' + hash.slice(13,16), hash.slice(16,20), hash.slice(20,32)].join('-');
+}
 const IMSG = '/opt/homebrew/bin/imsg';
 const OPENCLAW = '/opt/homebrew/bin/openclaw';
 
@@ -242,11 +252,18 @@ async function poll() {
         }
 
         // Route through openclaw agent (per-person session via --to)
-        const safeMsg = JSON.stringify(enriched);
-        const cmd = `${OPENCLAW} agent --agent imessage --to "${identifier}" --deliver --reply-channel imessage --reply-to "${identifier}" --message ${safeMsg} --timeout 120`;
+        // Use spawnSync to avoid shell escaping/length issues with large messages
+        const agentArgs = [
+          'agent', '--agent', 'imessage', '--to', identifier,
+          '--deliver', '--reply-channel', 'imessage', '--reply-to', identifier,
+          '--message', enriched, '--timeout', '120'
+        ];
         
         try {
-          await runAsync(cmd, 150000);
+          const result = spawnSync(OPENCLAW, agentArgs, { encoding: 'utf8', timeout: 130000 });
+          if (result.status !== 0) {
+            throw new Error(result.stderr || result.stdout || 'unknown error');
+          }
           log(`  Response delivered to ${name}`);
         } catch(e) {
           log(`  Agent error: ${e.message.split('\n')[0]}`);
