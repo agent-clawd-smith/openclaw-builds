@@ -222,14 +222,17 @@ async function poll() {
     // @agent command — only for Adam, routes to main agent inbox instead of family assistant
     const ADAM_IDENTIFIER = '+19163030339';
     if (identifier === ADAM_IDENTIFIER && messages.some(m => m.text && m.text.trim().toLowerCase().startsWith('@agent'))) {
-      const cmd = messages.filter(m => m.text && m.text.trim().toLowerCase().startsWith('@agent'))
-        .map(m => m.text.trim().replace(/^@agent\s*/i, '')).join(' ');
+      const agentMsgs = messages.filter(m => m.text && m.text.trim().toLowerCase().startsWith('@agent'));
+      const regularMsgs = messages.filter(m => !m.text || !m.text.trim().toLowerCase().startsWith('@agent'));
+      const cmd = agentMsgs.map(m => m.text.trim().replace(/^@agent\s*/i, '')).join(' ');
       const inboxPath = `${process.env.HOME}/.openclaw/workspace/agent-inbox.md`;
       const entry = `## ${new Date().toISOString()}\nFrom: Adam (iMessage)\n\n${cmd}\n\n---\n`;
       fs.appendFileSync(inboxPath, entry);
       log(`  @agent command queued: ${cmd.slice(0, 80)}`);
       try { run(`${IMSG} send --to "${identifier}" --text "Got it — I'll get back to you shortly 🕶️"`); } catch(e) {}
-      return; // Main agent picks this up via heartbeat
+      // Re-assign messages to only the non-@agent ones and continue processing
+      messages = regularMsgs;
+      if (messages.length === 0) return;
     }
 
     // Send immediate ack so the person knows we're on it
