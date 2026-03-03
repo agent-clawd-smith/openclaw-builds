@@ -1,24 +1,16 @@
 """
 Mirror signal scanner.
-Checks top trader wallets for recent buys and generates paper trade signals.
-Runs periodically during agent downtime.
+Checks top trader wallets for recent buys and logs paper trades.
+Run periodically during heartbeats.
 """
 import json
 import os
-import sqlite3
+import sys
 import subprocess
 from datetime import datetime, timezone
-from collections import defaultdict
 
-SECRETS_PATH = os.path.expanduser("~/.openclaw/secrets.json")
-DB_PATH = os.path.expanduser("~/.openclaw/workspace/polymarket/paper_trades.db")
-DATA_API = "https://data-api.polymarket.com"
-GAMMA_API = "https://gamma-api.polymarket.com"
-LOOKBACK_HOURS = 6  # Only look at trades in the last N hours
-MIN_BUY_SIZE = 5000  # Minimum USDC size to consider signal-worthy
-
-
-def curl_json(url):
+# Use curl for HTTP to avoid import issues
+def curl_get(url):
     result = subprocess.run(
         ["curl", "-s", "--max-time", "10", url],
         capture_output=True, text=True
@@ -27,179 +19,148 @@ def curl_json(url):
         return None
     try:
         return json.loads(result.stdout)
-    except Exception:
+    except:
         return None
 
 
 def load_wallets():
-    if not os.path.exists(SECRETS_PATH):
+    secrets_path = os.path.expanduser("~/.openclaw/secrets.json")
+    if not os.path.exists(secrets_path):
         return {}
-    with open(SECRETS_PATH) as f:
+    with open(secrets_path) as f:
         return json.load(f).get("polymarket_wallets", {})
 
 
-def get_recent_buys(address, lookback_hours=LOOKBACK_HOURS):
-    """Fetch recent BUY trades for a wallet within lookback window."""
-    data = curl_json(f"{DATA_API}/activity?user={address}&limit=50")
+def get_recent_buys(address, since_minutes=35):
+    """Get BUY trades from the last N minutes for a wallet."""
+    data = curl_get(f"https://data-api.polymarket.com/activity?user={address}&limit=20")
     if not data or not isinstance(data, list):
         return []
-    cutoff = datetime.now(timezone.utc).timestamp() - (lookback_hours * 3600)
+    cutoff = datetime.now(timezone.utc).timestamp() - (since_minutes * 60)
     buys = [
         t for t in data
         if t.get("type") == "TRADE"
         and t.get("side") == "BUY"
         and t.get("timestamp", 0) > cutoff
-        and float(t.get("usdcSize", 0)) >= MIN_BUY_SIZE
     ]
     return buys
 
 
-def get_market_price(condition_id):
-    """Get current YES price for a market."""
-    data = curl_json(f"{GAMMA_API}/markets/{condition_id}")
-    if not data:
+def get_current_price(condition_id, outcome_index=0):
+    """Get current market price for an outcome."""
+    data = curl_get(f"https://gamma-api.polymarket.com/markets?conditionIds={condition_id}")
+    if not data or not isinstance(data, list) or not data:
         return None
-    prices = data.get("outcomePrices", [])
-    outcomes = data.get("outcomes", [])
-    if prices and outcomes:
-        price_map = dict(zip(outcomes, [float(p) for p in prices]))
-        return price_map
-    return None
+    market = data[0]
+    prices = market.get("outcomePrices", [])
+    try:
+        return float(prices[outcome_index])
+    except:
+        return None
 
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            condition_id TEXT,
-            question TEXT,
-            outcome TEXT,
-            price REAL,
-            size REAL,
-            signal TEXT,
-            signal_confidence REAL,
-            notes TEXT,
-            resolved INTEGER DEFAULT 0,
-            resolution TEXT,
-            pnl REAL
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            condition_id TEXT,
-            source TEXT,
-            signal TEXT,
-            confidence REAL,
-            raw TEXT
-        )
-    """)
-    conn.commit()
-    return conn
+def load_state():
+    state_path = os.path.expanduser("~/.openclaw/workspace/polymarket/scanner_state.json")
+    if os.path.exists(state_path):
+        with open(state_path) as f:
+            return json.load(f)
+    return {"seen_txns": [], "last_run": None}
 
 
-def log_signal(conn, condition_id, source, signal, confidence, raw=""):
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO signals (timestamp, condition_id, source, signal, confidence, raw)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (datetime.utcnow().isoformat(), condition_id, source, signal, confidence, raw))
-    conn.commit()
-
-
-def log_paper_trade(conn, condition_id, question, outcome, price, size, signal, confidence, notes=""):
-    c = conn.cursor()
-    # Check for duplicate (same market + outcome already open)
-    c.execute("SELECT id FROM trades WHERE condition_id=? AND outcome=? AND resolved=0", (condition_id, outcome))
-    if c.fetchone():
-        return None  # Already have this position
-    c.execute("""
-        INSERT INTO trades (timestamp, condition_id, question, outcome, price, size, signal, signal_confidence, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (datetime.utcnow().isoformat(), condition_id, question, outcome, price, size, signal, confidence, notes))
-    conn.commit()
-    return c.lastrowid
+def save_state(state):
+    state_path = os.path.expanduser("~/.openclaw/workspace/polymarket/scanner_state.json")
+    # Keep seen_txns bounded
+    state["seen_txns"] = state["seen_txns"][-500:]
+    state["last_run"] = datetime.utcnow().isoformat()
+    with open(state_path, "w") as f:
+        json.dump(state, f, indent=2)
 
 
 def run_scan():
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Running mirror signal scan...")
     wallets = load_wallets()
-    if not wallets:
-        print("No wallets configured.")
-        return
+    state = load_state()
+    seen = set(state.get("seen_txns", []))
+    signals = []
 
-    conn = init_db()
-    # Aggregate signals by market
-    market_signals = defaultdict(list)
+    print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] Scanning {len(wallets)} wallets...")
 
     for address, name in wallets.items():
-        buys = get_recent_buys(address)
-        for buy in buys:
-            cid = buy.get("conditionId", "")
-            outcome = buy.get("outcome", "Yes")
-            usdc = float(buy.get("usdcSize", 0))
-            price = float(buy.get("price", 0))
-            title = buy.get("title", "")
-            signal_str = f"{name} bought {outcome} @ {price:.2f} (${usdc:,.0f})"
-            market_signals[cid].append({
+        buys = get_recent_buys(address, since_minutes=35)
+        for trade in buys:
+            txn = trade.get("transactionHash", "")
+            if not txn or txn in seen:
+                continue
+            seen.add(txn)
+
+            condition_id = trade.get("conditionId", "")
+            outcome = trade.get("outcome", "")
+            price = float(trade.get("price", 0))
+            usdc_size = float(trade.get("usdcSize", 0))
+            title = trade.get("title", "")
+            outcome_index = trade.get("outcomeIndex", 0)
+
+            # Only flag meaningful size trades
+            if usdc_size < 500:
+                continue
+
+            current_price = get_current_price(condition_id, outcome_index)
+
+            signal = {
                 "wallet": name,
-                "outcome": outcome,
-                "price": price,
-                "usdc": usdc,
+                "address": address[:12] + "...",
                 "title": title,
-                "signal": signal_str,
-            })
-            log_signal(conn, cid, f"mirror:{name}", outcome, min(usdc / 50000, 1.0), signal_str)
+                "outcome": outcome,
+                "entry_price": price,
+                "current_price": current_price,
+                "size_usdc": usdc_size,
+                "condition_id": condition_id,
+                "txn": txn[:16] + "...",
+                "timestamp": trade.get("timestamp"),
+            }
+            signals.append(signal)
+            print(f"  🎯 SIGNAL: {name} bought {outcome} @ {price:.2f} (${usdc_size:,.0f}) — {title[:60]}")
+            if current_price and abs(current_price - price) > 0.02:
+                print(f"     Current price: {current_price:.2f} (moved {current_price - price:+.2f})")
 
-    # Find markets with multiple top traders aligned
-    new_trades = 0
-    for cid, signals in market_signals.items():
-        if not signals:
-            continue
-        title = signals[0]["title"]
-        # Count unique wallets and dominant outcome
-        outcome_votes = defaultdict(float)
-        for s in signals:
-            outcome_votes[s["outcome"]] += s["usdc"]
-        top_outcome = max(outcome_votes, key=outcome_votes.get)
-        total_usdc = sum(outcome_votes.values())
-        wallet_count = len(set(s["wallet"] for s in signals))
-        confidence = min(wallet_count / 3.0, 1.0)  # 3 wallets = full confidence
-        avg_price = sum(s["price"] for s in signals if s["outcome"] == top_outcome) / max(
-            len([s for s in signals if s["outcome"] == top_outcome]), 1)
+    state["seen_txns"] = list(seen)
+    save_state(state)
 
-        note = f"{wallet_count} top traders | ${total_usdc:,.0f} total | {', '.join(set(s['wallet'] for s in signals))}"
-        print(f"  Signal [{confidence:.0%} conf]: {top_outcome} on '{title[:60]}' — {note}")
+    if not signals:
+        print("  No new signals.")
 
-        # Paper trade if confidence > 30% and price < 0.90 (not already near resolved)
-        if confidence >= 0.33 and avg_price < 0.90:
-            paper_size = min(total_usdc / 100, 500)  # 1% of whale size, max $500
-            trade_id = log_paper_trade(conn, cid, title, top_outcome, avg_price, paper_size,
-                                       "mirror", confidence, note)
-            if trade_id:
-                print(f"    → PAPER TRADE #{trade_id}: {top_outcome} @ {avg_price:.2f}, ${paper_size:.2f}")
-                new_trades += 1
+    return signals
 
-    conn.close()
-    print(f"Scan complete. {len(market_signals)} markets with signals, {new_trades} new paper trades.")
-    return new_trades
+
+def log_paper_trades(signals):
+    """Log mirror signals as paper trades."""
+    if not signals:
+        return
+
+    # Import paper trader
+    sys.path.insert(0, os.path.dirname(__file__))
+    from paper_trader import log_trade, init_db
+    init_db()
+
+    PAPER_SIZE = 100  # Simulate $100 per mirrored trade
+
+    for s in signals:
+        price = s["current_price"] or s["entry_price"]
+        log_trade(
+            condition_id=s["condition_id"],
+            question=s["title"],
+            outcome=s["outcome"],
+            price=price,
+            size=PAPER_SIZE,
+            signal=f"mirror:{s['wallet']}",
+            confidence=0.6,
+            notes=f"Mirrored {s['wallet']} buy of ${s['size_usdc']:,.0f} @ {s['entry_price']:.2f}"
+        )
 
 
 if __name__ == "__main__":
-    run_scan()
-
-    # Print portfolio summary
-    conn = init_db()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*), SUM(size) FROM trades WHERE resolved=0")
-    open_count, exposure = c.fetchone()
-    c.execute("SELECT COUNT(*), SUM(pnl) FROM trades WHERE resolved=1")
-    closed, pnl = c.fetchone()
-    conn.close()
-    print(f"\n=== PAPER PORTFOLIO ===")
-    print(f"Open: {open_count or 0} | Exposure: ${exposure or 0:.2f}")
-    print(f"Closed: {closed or 0} | P&L: ${pnl or 0:+.2f}")
+    signals = run_scan()
+    if signals:
+        log_paper_trades(signals)
+        print(f"\n{len(signals)} signals logged as paper trades.")
+    else:
+        print("Scan complete — nothing to trade.")
