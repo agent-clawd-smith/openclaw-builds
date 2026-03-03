@@ -64,7 +64,7 @@ def get_wallet_positions(address):
 
 
 def get_wallet_trades(address, limit=20):
-    """Fetch recent trades for a wallet."""
+    """Fetch recent trades for a wallet via activity endpoint."""
     url = f"{DATA_API}/activity"
     params = {"user": address, "limit": limit}
     try:
@@ -75,6 +75,13 @@ def get_wallet_trades(address, limit=20):
     except Exception as e:
         print(f"Error fetching trades for {address}: {e}")
         return []
+
+
+def get_recent_buys(address, limit=10):
+    """Get only recent BUY trades for a wallet — the actionable signal."""
+    trades = get_wallet_trades(address, limit=limit * 3)
+    buys = [t for t in trades if t.get("type") == "TRADE" and t.get("side") == "BUY"]
+    return buys[:limit]
 
 
 def get_mirror_signals(min_position_size=100):
