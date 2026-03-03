@@ -1,24 +1,21 @@
 """
-Mirror signal scanner — checks top trader wallets for recent buys,
-cross-references with open markets, generates paper trade signals.
-
-Run this during heartbeats to find actionable opportunities.
+Mirror signal scanner.
+Checks top trader wallets for recent buys and generates paper trade signals.
+Runs periodically during agent downtime.
 """
 import json
 import os
-import sys
+import sqlite3
 import subprocess
 from datetime import datetime, timezone
+from collections import defaultdict
 
 SECRETS_PATH = os.path.expanduser("~/.openclaw/secrets.json")
+DB_PATH = os.path.expanduser("~/.openclaw/workspace/polymarket/paper_trades.db")
 DATA_API = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
-
-# Only mirror trades above this size (filters noise)
-MIN_TRADE_SIZE_USDC = 500
-
-# Only consider trades in the last N seconds
-LOOKBACK_SECONDS = 1800  # 30 minutes
+LOOKBACK_HOURS = 6  # Only look at trades in the last N hours
+MIN_BUY_SIZE = 5000  # Minimum USDC size to consider signal-worthy
 
 
 def curl_json(url):
@@ -26,7 +23,7 @@ def curl_json(url):
         ["curl", "-s", "--max-time", "10", url],
         capture_output=True, text=True
     )
-    if result.returncode != 0 or not result.stdout.strip():
+    if result.returncode != 0:
         return None
     try:
         return json.loads(result.stdout)
@@ -41,133 +38,168 @@ def load_wallets():
         return json.load(f).get("polymarket_wallets", {})
 
 
-def get_recent_buys(address, label):
-    """Get BUY trades from the last 30 minutes above minimum size."""
-    url = f"{DATA_API}/activity?user={address}&limit=20"
-    trades = curl_json(url) or []
-    now = datetime.now(timezone.utc).timestamp()
-    signals = []
-    for t in trades:
-        if t.get("type") != "TRADE" or t.get("side") != "BUY":
-            continue
-        age = now - t.get("timestamp", 0)
-        if age > LOOKBACK_SECONDS:
-            continue
-        usdc = float(t.get("usdcSize", 0))
-        if usdc < MIN_TRADE_SIZE_USDC:
-            continue
-        signals.append({
-            "wallet": label,
-            "address": address,
-            "condition_id": t.get("conditionId", ""),
-            "title": t.get("title", ""),
-            "outcome": t.get("outcome", ""),
-            "price": float(t.get("price", 0)),
-            "usdc_size": usdc,
-            "share_size": float(t.get("size", 0)),
-            "timestamp": t.get("timestamp", 0),
-            "age_minutes": round(age / 60, 1),
-        })
-    return signals
+def get_recent_buys(address, lookback_hours=LOOKBACK_HOURS):
+    """Fetch recent BUY trades for a wallet within lookback window."""
+    data = curl_json(f"{DATA_API}/activity?user={address}&limit=50")
+    if not data or not isinstance(data, list):
+        return []
+    cutoff = datetime.now(timezone.utc).timestamp() - (lookback_hours * 3600)
+    buys = [
+        t for t in data
+        if t.get("type") == "TRADE"
+        and t.get("side") == "BUY"
+        and t.get("timestamp", 0) > cutoff
+        and float(t.get("usdcSize", 0)) >= MIN_BUY_SIZE
+    ]
+    return buys
 
 
-def scan_all_wallets():
-    """Scan all tracked wallets and return consolidated signals."""
+def get_market_price(condition_id):
+    """Get current YES price for a market."""
+    data = curl_json(f"{GAMMA_API}/markets/{condition_id}")
+    if not data:
+        return None
+    prices = data.get("outcomePrices", [])
+    outcomes = data.get("outcomes", [])
+    if prices and outcomes:
+        price_map = dict(zip(outcomes, [float(p) for p in prices]))
+        return price_map
+    return None
+
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            condition_id TEXT,
+            question TEXT,
+            outcome TEXT,
+            price REAL,
+            size REAL,
+            signal TEXT,
+            signal_confidence REAL,
+            notes TEXT,
+            resolved INTEGER DEFAULT 0,
+            resolution TEXT,
+            pnl REAL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            condition_id TEXT,
+            source TEXT,
+            signal TEXT,
+            confidence REAL,
+            raw TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def log_signal(conn, condition_id, source, signal, confidence, raw=""):
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO signals (timestamp, condition_id, source, signal, confidence, raw)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (datetime.utcnow().isoformat(), condition_id, source, signal, confidence, raw))
+    conn.commit()
+
+
+def log_paper_trade(conn, condition_id, question, outcome, price, size, signal, confidence, notes=""):
+    c = conn.cursor()
+    # Check for duplicate (same market + outcome already open)
+    c.execute("SELECT id FROM trades WHERE condition_id=? AND outcome=? AND resolved=0", (condition_id, outcome))
+    if c.fetchone():
+        return None  # Already have this position
+    c.execute("""
+        INSERT INTO trades (timestamp, condition_id, question, outcome, price, size, signal, signal_confidence, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (datetime.utcnow().isoformat(), condition_id, question, outcome, price, size, signal, confidence, notes))
+    conn.commit()
+    return c.lastrowid
+
+
+def run_scan():
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Running mirror signal scan...")
     wallets = load_wallets()
     if not wallets:
         print("No wallets configured.")
-        return []
+        return
 
-    all_signals = []
-    for address, label in wallets.items():
-        buys = get_recent_buys(address, label)
-        if buys:
-            print(f"  [{label}] {len(buys)} recent buy(s)")
-            all_signals.extend(buys)
+    conn = init_db()
+    # Aggregate signals by market
+    market_signals = defaultdict(list)
 
-    # Deduplicate by condition_id+outcome — if multiple whales buying same thing, stronger signal
-    seen = {}
-    for s in all_signals:
-        key = f"{s['condition_id']}:{s['outcome']}"
-        if key not in seen:
-            seen[key] = {"signal": s, "count": 1, "total_usdc": s["usdc_size"]}
-        else:
-            seen[key]["count"] += 1
-            seen[key]["total_usdc"] += s["usdc_size"]
+    for address, name in wallets.items():
+        buys = get_recent_buys(address)
+        for buy in buys:
+            cid = buy.get("conditionId", "")
+            outcome = buy.get("outcome", "Yes")
+            usdc = float(buy.get("usdcSize", 0))
+            price = float(buy.get("price", 0))
+            title = buy.get("title", "")
+            signal_str = f"{name} bought {outcome} @ {price:.2f} (${usdc:,.0f})"
+            market_signals[cid].append({
+                "wallet": name,
+                "outcome": outcome,
+                "price": price,
+                "usdc": usdc,
+                "title": title,
+                "signal": signal_str,
+            })
+            log_signal(conn, cid, f"mirror:{name}", outcome, min(usdc / 50000, 1.0), signal_str)
 
-    consolidated = []
-    for key, v in seen.items():
-        entry = v["signal"].copy()
-        entry["whale_count"] = v["count"]
-        entry["total_usdc"] = v["total_usdc"]
-        consolidated.append(entry)
+    # Find markets with multiple top traders aligned
+    new_trades = 0
+    for cid, signals in market_signals.items():
+        if not signals:
+            continue
+        title = signals[0]["title"]
+        # Count unique wallets and dominant outcome
+        outcome_votes = defaultdict(float)
+        for s in signals:
+            outcome_votes[s["outcome"]] += s["usdc"]
+        top_outcome = max(outcome_votes, key=outcome_votes.get)
+        total_usdc = sum(outcome_votes.values())
+        wallet_count = len(set(s["wallet"] for s in signals))
+        confidence = min(wallet_count / 3.0, 1.0)  # 3 wallets = full confidence
+        avg_price = sum(s["price"] for s in signals if s["outcome"] == top_outcome) / max(
+            len([s for s in signals if s["outcome"] == top_outcome]), 1)
 
-    # Sort by whale count desc, then total USDC
-    consolidated.sort(key=lambda x: (x["whale_count"], x["total_usdc"]), reverse=True)
-    return consolidated
+        note = f"{wallet_count} top traders | ${total_usdc:,.0f} total | {', '.join(set(s['wallet'] for s in signals))}"
+        print(f"  Signal [{confidence:.0%} conf]: {top_outcome} on '{title[:60]}' — {note}")
 
+        # Paper trade if confidence > 30% and price < 0.90 (not already near resolved)
+        if confidence >= 0.33 and avg_price < 0.90:
+            paper_size = min(total_usdc / 100, 500)  # 1% of whale size, max $500
+            trade_id = log_paper_trade(conn, cid, title, top_outcome, avg_price, paper_size,
+                                       "mirror", confidence, note)
+            if trade_id:
+                print(f"    → PAPER TRADE #{trade_id}: {top_outcome} @ {avg_price:.2f}, ${paper_size:.2f}")
+                new_trades += 1
 
-def generate_paper_trade(signal):
-    """Decide whether to paper trade a signal using simple rules."""
-    # Rule 1: Multiple whales = stronger signal
-    if signal["whale_count"] >= 2:
-        confidence = 0.75
-    else:
-        confidence = 0.55
-
-    # Rule 2: Skip if price already > 0.85 (not much upside)
-    if signal["price"] > 0.85:
-        return None, "price too high"
-
-    # Rule 3: Skip if price < 0.05 (too risky)
-    if signal["price"] < 0.05:
-        return None, "price too low/risky"
-
-    # Paper trade size: flat $50 per signal (paper money)
-    size = 50.0
-
-    return {
-        "condition_id": signal["condition_id"],
-        "question": signal["title"],
-        "outcome": signal["outcome"],
-        "price": signal["price"],
-        "size": size,
-        "signal": f"mirror:{signal['wallet']} (x{signal['whale_count']} whales, ${signal['total_usdc']:,.0f} USDC)",
-        "confidence": confidence,
-    }, None
+    conn.close()
+    print(f"Scan complete. {len(market_signals)} markets with signals, {new_trades} new paper trades.")
+    return new_trades
 
 
 if __name__ == "__main__":
-    print(f"\n🔍 Scanning {len(load_wallets())} wallets for signals...")
-    print(f"   Lookback: {LOOKBACK_SECONDS//60} min | Min trade: ${MIN_TRADE_SIZE_USDC:,} USDC\n")
+    run_scan()
 
-    signals = scan_all_wallets()
-
-    if not signals:
-        print("No signals found in the last 30 minutes.")
-        sys.exit(0)
-
-    print(f"\n📊 {len(signals)} consolidated signal(s):\n")
-    for s in signals:
-        trade, reason = generate_paper_trade(s)
-        if trade:
-            print(f"  ✅ PAPER TRADE: {s['outcome']} @ {s['price']:.2f}")
-            print(f"     Market: {s['title'][:65]}")
-            print(f"     Signal: {s['whale_count']} whale(s), ${s['total_usdc']:,.0f} USDC total")
-            print(f"     Age: {s['age_minutes']} min ago")
-
-            # Log to paper trader
-            sys.path.insert(0, os.path.dirname(__file__))
-            from paper_trader import log_trade
-            log_trade(
-                trade["condition_id"], trade["question"], trade["outcome"],
-                trade["price"], trade["size"], trade["signal"], trade["confidence"]
-            )
-        else:
-            print(f"  ⏭  SKIP: {s['outcome']} @ {s['price']:.2f} ({reason})")
-            print(f"     Market: {s['title'][:65]}")
-        print()
-
-    # Summary
-    from paper_trader import portfolio_summary
-    portfolio_summary()
+    # Print portfolio summary
+    conn = init_db()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*), SUM(size) FROM trades WHERE resolved=0")
+    open_count, exposure = c.fetchone()
+    c.execute("SELECT COUNT(*), SUM(pnl) FROM trades WHERE resolved=1")
+    closed, pnl = c.fetchone()
+    conn.close()
+    print(f"\n=== PAPER PORTFOLIO ===")
+    print(f"Open: {open_count or 0} | Exposure: ${exposure or 0:.2f}")
+    print(f"Closed: {closed or 0} | P&L: ${pnl or 0:+.2f}")
