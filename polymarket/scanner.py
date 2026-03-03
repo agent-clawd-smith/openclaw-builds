@@ -1,34 +1,27 @@
 """
-Mirror signal scanner — checks top trader wallets for recent buys
-and generates paper trade signals.
+Market scanner — the main autonomous loop.
+Checks top trader OPEN POSITIONS, identifies mirror signals,
+logs paper trades.
 """
-import json
-import os
-import subprocess
+import json, os, sys, time
 from datetime import datetime, timezone
-from paper_trader import log_trade, log_signal, portfolio_summary
 
-SECRETS_PATH = os.path.expanduser("~/.openclaw/secrets.json")
 DATA_API = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API  = "https://clob.polymarket.com"
+SECRETS_PATH = os.path.expanduser("~/.openclaw/secrets.json")
+TRADES_PATH  = os.path.expanduser("~/.openclaw/workspace/polymarket/paper_trades.json")
 
-# Only mirror trades placed in last N minutes
-RECENCY_MINUTES = 60
-# Minimum buy size to consider a signal meaningful
-MIN_BUY_SIZE = 500
+MIN_POSITION_VALUE = 5000   # Min USD position to mirror
+PAPER_TRADE_SIZE   = 100    # Simulated USD per trade
+MAX_POSITIONS      = 10
 
 
-def curl_json(url):
-    result = subprocess.run(
-        ["curl", "-s", "--max-time", "10", url],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout)
-    except Exception:
-        return None
+def fetch(url):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "AgentClawdSmith/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
 
 
 def load_wallets():
@@ -38,109 +31,133 @@ def load_wallets():
         return json.load(f).get("polymarket_wallets", {})
 
 
-def get_recent_buys(address, since_minutes=RECENCY_MINUTES):
-    data = curl_json(f"{DATA_API}/activity?user={address}&limit=20")
-    if not data or not isinstance(data, list):
+def get_open_positions(address):
+    """Get currently open positions with real value."""
+    url = f"{DATA_API}/positions?user={address}&sizeThreshold=100&limit=50&redeemable=false"
+    try:
+        data = fetch(url)
+        positions = data if isinstance(data, list) else []
+        return [p for p in positions if float(p.get("currentValue", 0)) > 10]
+    except:
         return []
-    cutoff = datetime.now(timezone.utc).timestamp() - (since_minutes * 60)
-    buys = []
-    for t in data:
-        if t.get("type") != "TRADE" or t.get("side") != "BUY":
-            continue
-        if float(t.get("timestamp", 0)) < cutoff:
-            continue
-        size = float(t.get("usdcSize", 0))
-        if size < MIN_BUY_SIZE:
-            continue
-        buys.append(t)
-    return buys
 
 
-def get_market_price(condition_id):
-    """Get current YES price for a market."""
-    data = curl_json(f"{GAMMA_API}/markets/{condition_id}")
-    if not data:
+def get_clob_price(condition_id, outcome="Yes"):
+    """Get current market price from CLOB API."""
+    import urllib.request
+    url = f"{CLOB_API}/markets/{condition_id}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "AgentClawdSmith/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            m = json.loads(r.read())
+        if m.get("closed"):
+            return None
+        for token in m.get("tokens", []):
+            if token.get("outcome", "").lower() == outcome.lower():
+                return float(token.get("price", 0))
+        # fallback: first token
+        tokens = m.get("tokens", [])
+        return float(tokens[0]["price"]) if tokens else None
+    except:
         return None
-    prices = data.get("outcomePrices", [])
-    outcomes = data.get("outcomes", [])
-    if prices and outcomes:
-        price_map = dict(zip(outcomes, prices))
-        return price_map
-    return None
 
 
-def scan_and_signal():
+def load_trades():
+    if os.path.exists(TRADES_PATH):
+        with open(TRADES_PATH) as f:
+            return json.load(f)
+    return []
+
+
+def save_trades(trades):
+    with open(TRADES_PATH, "w") as f:
+        json.dump(trades, f, indent=2)
+
+
+def print_portfolio(trades):
+    open_t  = [t for t in trades if not t.get("resolved")]
+    closed_t = [t for t in trades if t.get("resolved")]
+    pnl = sum(t.get("pnl", 0) or 0 for t in closed_t)
+    print(f"\n=== PAPER PORTFOLIO ===")
+    print(f"Open: {len(open_t)} | Closed: {len(closed_t)} | Total P&L: ${pnl:+.2f}")
+    for t in open_t:
+        print(f"  #{t['id']} {t['outcome']} @ {t['entry_price']:.3f} | {t['title'][:55]}")
+        print(f"       Signal: {t['signal_source']} (${t['signal_size']:,.0f})")
+    print("=======================\n")
+
+
+def run_scan():
     wallets = load_wallets()
-    if not wallets:
-        print("No wallets configured.")
-        return []
+    trades  = load_trades()
+    open_count = sum(1 for t in trades if not t.get("resolved"))
+    open_markets = {t["condition_id"] for t in trades if not t.get("resolved")}
 
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(wallets)} wallets for recent buys (last {RECENCY_MINUTES}min, min ${MIN_BUY_SIZE})...")
+    print(f"[{datetime.now():%H:%M:%S}] Scanning {len(wallets)} wallets...")
 
-    all_signals = []
-    seen_conditions = {}  # condition_id -> list of (wallet, trade)
+    signals = []
+    for address, name in wallets.items():
+        positions = get_open_positions(address)
+        for pos in positions:
+            val = float(pos.get("currentValue", 0))
+            if val < MIN_POSITION_VALUE:
+                continue
+            signals.append({
+                "source":       f"mirror:{name}",
+                "condition_id": pos.get("conditionId", ""),
+                "title":        pos.get("title", ""),
+                "outcome":      pos.get("outcome", "Yes"),
+                "price":        float(pos.get("curPrice", pos.get("price", 0))),
+                "signal_size":  val,
+            })
+        time.sleep(0.2)
 
-    for address, label in wallets.items():
-        buys = get_recent_buys(address)
-        if buys:
-            print(f"  {label}: {len(buys)} qualifying buy(s)")
-        for t in buys:
-            cid = t.get("conditionId", "")
-            if cid not in seen_conditions:
-                seen_conditions[cid] = []
-            seen_conditions[cid].append((label, t))
+    # Deduplicate by condition_id, keep largest signal
+    seen = {}
+    for s in signals:
+        cid = s["condition_id"]
+        if cid not in seen or s["signal_size"] > seen[cid]["signal_size"]:
+            seen[cid] = s
+    signals = sorted(seen.values(), key=lambda x: x["signal_size"], reverse=True)
 
-    # Markets with multiple top traders buying = stronger signal
-    for cid, entries in seen_conditions.items():
-        confidence = min(0.5 + (len(entries) * 0.15), 0.95)
-        first = entries[0][1]
-        title = first.get("title", "")
-        outcome = first.get("outcome", "Yes")
-        price = float(first.get("price", 0))
-        total_size = sum(float(e[1].get("usdcSize", 0)) for e in entries)
-        wallets_buying = [e[0] for e in entries]
+    print(f"Found {len(signals)} unique open-position signals ≥ ${MIN_POSITION_VALUE:,}")
 
-        signal = {
-            "condition_id": cid,
-            "title": title,
-            "outcome": outcome,
-            "price": price,
-            "total_mirror_size": total_size,
-            "wallets": wallets_buying,
-            "confidence": confidence,
-            "timestamp": datetime.utcnow().isoformat(),
+    new_trades = 0
+    for sig in signals:
+        if open_count + new_trades >= MAX_POSITIONS:
+            break
+        if sig["condition_id"] in open_markets:
+            continue  # already in this market
+
+        price = get_clob_price(sig["condition_id"], sig["outcome"])
+        if price is None or price > 0.97 or price < 0.02:
+            continue  # closed or at extremes
+
+        trade = {
+            "id":            len(trades) + 1,
+            "timestamp":     datetime.now(timezone.utc).isoformat(),
+            "condition_id":  sig["condition_id"],
+            "title":         sig["title"],
+            "outcome":       sig["outcome"],
+            "entry_price":   price,
+            "paper_size":    PAPER_TRADE_SIZE,
+            "signal_source": sig["source"],
+            "signal_size":   sig["signal_size"],
+            "resolved":      False,
+            "resolution":    None,
+            "pnl":           None,
         }
-        all_signals.append(signal)
+        trades.append(trade)
+        open_markets.add(sig["condition_id"])
+        new_trades += 1
+        print(f"  [PAPER #{trade['id']}] {sig['outcome']} @ {price:.3f} | {sig['title'][:58]}")
+        print(f"    Mirror: {sig['source']} has ${sig['signal_size']:,.0f} on this")
+        time.sleep(0.2)
 
-        # Log signal
-        log_signal(cid, "mirror", outcome, confidence,
-                   raw=json.dumps({"wallets": wallets_buying, "total_size": total_size}))
-
-        print(f"\n  [SIGNAL] {title[:65]}")
-        print(f"    Outcome: {outcome} @ {price:.2f}")
-        print(f"    Mirror wallets: {', '.join(wallets_buying)}")
-        print(f"    Combined size: ${total_size:,.0f} | Confidence: {confidence:.0%}")
-
-        # Paper trade: size proportional to confidence, max $50 simulated
-        paper_size = round(confidence * 50, 2)
-        log_trade(
-            condition_id=cid,
-            question=title,
-            outcome=outcome,
-            price=price,
-            size=paper_size,
-            signal="mirror",
-            confidence=confidence,
-            notes=f"Mirroring: {', '.join(wallets_buying)}"
-        )
-
-    if not all_signals:
-        print("  No qualifying signals found.")
-
-    print()
-    portfolio_summary()
-    return all_signals
+    save_trades(trades)
+    if new_trades == 0 and not signals:
+        print("No new signals.")
+    print_portfolio(trades)
 
 
 if __name__ == "__main__":
-    scan_and_signal()
+    run_scan()
