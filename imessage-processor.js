@@ -17,7 +17,7 @@ const { spawnSync } = require('child_process');
 const https = require('https');
 
 const CONTACTS_FILE = path.join(process.env.HOME, '.openclaw/workspace/family-contacts.json');
-const STATE_FILE = '/tmp/imessage-processor-state.json';
+const STATE_FILE = path.join(process.env.HOME, '.openclaw/workspace/memory/imessage-processor-state.json');
 const POLL_INTERVAL = 10000;
 
 // Generate a stable session ID per identifier so each person
@@ -219,20 +219,32 @@ async function poll() {
 
     log(`${newMessages.length} new message(s) from ${name} (${identifier})`);
 
-    // @agent command — only for Adam, routes to main agent inbox instead of family assistant
+    // @agent command — only for Adam, routes to main agent via gateway
     const ADAM_IDENTIFIER = '+19163030339';
-    if (identifier === ADAM_IDENTIFIER && messages.some(m => m.text && m.text.trim().toLowerCase().startsWith('@agent'))) {
-      const agentMsgs = messages.filter(m => m.text && m.text.trim().toLowerCase().startsWith('@agent'));
-      const regularMsgs = messages.filter(m => !m.text || !m.text.trim().toLowerCase().startsWith('@agent'));
-      const cmd = agentMsgs.map(m => m.text.trim().replace(/^@agent\s*/i, '')).join(' ');
-      const inboxPath = `${process.env.HOME}/.openclaw/workspace/agent-inbox.md`;
-      const entry = `## ${new Date().toISOString()}\nFrom: Adam (iMessage)\n\n${cmd}\n\n---\n`;
-      fs.appendFileSync(inboxPath, entry);
-      log(`  @agent command queued: ${cmd.slice(0, 80)}`);
-      try { run(`${IMSG} send --to "${identifier}" --text "Got it — I'll get back to you shortly 🕶️"`); } catch(e) {}
-      // Re-assign messages to only the non-@agent ones and continue processing
-      messages = regularMsgs;
-      if (messages.length === 0) return;
+    if (identifier === ADAM_IDENTIFIER) {
+      const agentNewMsgs = newMessages.filter(m => m.text && m.text.trim().toLowerCase().startsWith('@agent'));
+      if (agentNewMsgs.length > 0) {
+        const cmd = agentNewMsgs.map(m => m.text.trim().replace(/^@agent\s*/i, '')).join(' ');
+        log(`  @agent command routing to main agent: ${cmd.slice(0, 80)}`);
+        try {
+          const result = spawnSync(OPENCLAW, [
+            'agent', '--agent', 'main', '--to', identifier,
+            '--deliver', '--reply-channel', 'imessage', '--reply-to', identifier,
+            '--message', cmd, '--timeout', '120'
+          ], { encoding: 'utf8', timeout: 130000 });
+          if (result.status !== 0) {
+            log(`  @agent error: ${(result.stderr || result.stdout || 'unknown').split('\n')[0]}`);
+          } else {
+            log(`  @agent response delivered`);
+          }
+        } catch(e) {
+          log(`  @agent error: ${e.message.split('\n')[0]}`);
+        }
+        // Drop @agent messages from the batch; continue with remaining non-@agent messages
+        const remaining = newMessages.filter(m => !m.text || !m.text.trim().toLowerCase().startsWith('@agent'));
+        newMessages.splice(0, newMessages.length, ...remaining);
+        if (newMessages.length === 0) continue;
+      }
     }
 
     // Send immediate ack so the person knows we're on it
@@ -250,6 +262,7 @@ async function poll() {
     await new Promise(r => setTimeout(r, 4000));
     const batchedMessages = getMessages(chatId, 15)
       .filter(m => !m.is_from_me && m.id > lastSeenId)
+      .filter(m => !m.text || !m.text.trim().toLowerCase().startsWith('@agent'))
       .sort((a, b) => a.id - b.id);
 
     // Update state to cover any new messages that arrived during wait
