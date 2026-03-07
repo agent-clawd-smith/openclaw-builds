@@ -219,8 +219,9 @@ async function poll() {
 
     log(`${newMessages.length} new message(s) from ${name} (${identifier})`);
 
-    // @agent command — only for Adam, routes to main agent via gateway
-    const ADAM_IDENTIFIER = '+19163030339';
+    // @agent command — only for Adam (owner), routes to main agent via gateway
+    const defaultAllowFrom = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.openclaw/credentials/imessage-default-allowFrom.json'), 'utf8'));
+    const ADAM_IDENTIFIER = defaultAllowFrom.allowFrom[0];
     if (identifier === ADAM_IDENTIFIER) {
       const agentNewMsgs = newMessages.filter(m => m.text && m.text.trim().toLowerCase().startsWith('@agent'));
       if (agentNewMsgs.length > 0) {
