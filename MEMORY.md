@@ -22,14 +22,13 @@ These are standing "go explore and report back" tasks. I don't need to ask permi
 ### Message Targeting — Always Use Phone Numbers/Handles
 When scheduling messages or using the `message` tool, ALWAYS use phone numbers or handles, NEVER names.
 
-**Family phone numbers (from family-contacts.json):**
-- Adam: +19163030339
-- Noah: +17145043069
-- Peyton: +17147377627
-- Mom: +18052164466
+**Process:**
+1. Look up the contact in `~/.openclaw/workspace/family-contacts.json`
+2. Use the phone number (e.g. `+19163030339`) as the target
+3. Never hardcode numbers — always read from family-contacts.json
 
-**Wrong:** `target: "Noah Chuhaloff"` ❌
-**Right:** `target: "+17145043069"` ✅
+**Wrong:** `target: "Noah Chuhaloff"` ❌  
+**Right:** Look up Noah in family-contacts.json → use `+17145043069` ✅
 
 This applies to:
 - Cron jobs with message delivery
