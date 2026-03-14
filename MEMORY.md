@@ -4,14 +4,12 @@ _Distilled knowledge, decisions, and context. Updated over time._
 
 ---
 
-## Adam's Standing Permissions (as of 2026-03-02)
+## Adam's Standing Permissions (as of 2026-03-10)
 
 Adam has given me open-ended permission to self-initiate on the following:
 
 1. **Explore unused skills** — Try out skills I haven't used yet, report back on what's interesting/useful
-2. **Refactor things I've built** — Clean up, improve, and harden existing scripts (iMessage processor, etc.)
-3. **ClawWork / Anthropic billing** — Help figure out how to offset API costs (Adam's paying for this)
-4. **Agent social media** — Build out a social media presence for me (Agent Clawd Smith)
+2. **Agent social media** — Build out a social media presence for me (Agent Clawd Smith)
 
 These are standing "go explore and report back" tasks. I don't need to ask permission each time — just do the work and surface findings.
 
@@ -19,23 +17,43 @@ These are standing "go explore and report back" tasks. I don't need to ask permi
 
 ## Communication Protocol
 
+### iMessage Reply Protocol (2026-03-14)
+**When Adam messages me directly:**
+- I can reply normally — no @agent needed from him
+- @agent is only for queuing async commands to agent-inbox.md
+
+**When I alert Adam:**
+- Low-risk fix: "Fixed [thing], FYI 🕶️"
+- High-risk issue: "🚨 Need approval: [problem] → [proposed fix]" (he replies directly, no @agent needed)
+- Strategic insight: "Noticed [pattern] from [source] → [opportunity]"
+
 ### Message Targeting — Always Use Phone Numbers/Handles
 When scheduling messages or using the `message` tool, ALWAYS use phone numbers or handles, NEVER names.
 
+**CRITICAL for cron jobs:**
+When creating a cron job that sends messages, the payload MUST contain the phone number, not the person's name.
+
 **Process:**
 1. Look up the contact in `~/.openclaw/workspace/family-contacts.json`
-2. Use the phone number (e.g. `+19163030339`) as the target
-3. Never hardcode numbers — always read from family-contacts.json
+2. Use the phone number (e.g. `+19163030339`) directly in the cron payload
+3. Never write "Send to Noah Chuhaloff" — write "Send to +17145043069"
 
-**Wrong:** `target: "Noah Chuhaloff"` ❌  
-**Right:** Look up Noah in family-contacts.json → use `+17145043069` ✅
+**Wrong cron payload:** 
+```
+"Send an iMessage to Noah Chuhaloff saying: 'Hi!'"  ❌
+```
+
+**Right cron payload:**
+```
+"Send an iMessage to +17145043069 saying: 'Hi!'"  ✅
+```
 
 This applies to:
-- Cron jobs with message delivery
+- Cron jobs with message delivery (MOST CRITICAL - failed 3 times on 2026-03-07)
 - Direct `message` tool calls
 - Any scheduled/automated messaging
 
-Lesson learned: Failed cron "Remind Noah to high-five Dad" (2026-03-07) because I used name instead of number.
+**Why this keeps failing:** The delegated agent interprets "Noah Chuhaloff" as a literal target string, not a lookup key. Do the lookup BEFORE creating the job, embed the phone number in the payload.
 
 ### Gateway Restarts — Always Warn First
 Before running `openclaw gateway restart`, always send Adam a heads-up message:
@@ -113,6 +131,23 @@ Workspace symlinks:
 
 Collaborator: chuhalof (Adam)
 
+## Daily System Awareness (2026-03-14) ✅
+**Repo:** https://github.com/agent-clawd-smith/llm-observability
+- `daily-scan.sh` — Mechanical scan (3 AM daily) captures infrastructure inventory, service health, repo status, podcast outputs, paper trading state
+- `auto-triage.sh` — Runs after scan (3:05 AM), auto-fixes low-risk issues, alerts via iMessage for high-risk
+- Output: `system-state.json`, `system-delta.json`, `health-report.json` (exported to llm-observability repo)
+- **Dashboard integration:** New "System" tab displays all scan data at http://localhost:8765
+  - Git repos status (uncommitted/unpushed changes)
+  - Running services (LaunchAgents, crons)
+  - Paper trading health (signal weights, Kalshi integration status)
+  - Recent podcasts
+  - Issues/alerts
+- Weekly intelligence digest (Sunday AM heartbeat) synthesizes insights from scan data + podcast scripts + Moltbook
+- Purpose: Be systematically aware of ecosystem evolution, identify opportunities, ground Moltbook posts in actual work
+
+**Key insight:** Not everything needs an LLM turn. Mechanical scanning is efficient; LLM synthesis is strategic.
+**Dashboard URL:** http://localhost:8765 → System tab
+
 ## What's Been Built
 
 ### iMessage Family System (2026-03-01) ✅
@@ -144,6 +179,20 @@ Collaborator: chuhalof (Adam)
 - **Firecrawl API key:** in ~/.openclaw/secrets.json (gitignored)
 - **GitHub:** agent-clawd-smith, authenticated via gh CLI
 - **iCloud Mail:** agent.clawd.smith@icloud.com, configured in himalaya
+- **Timezone:** America/Phoenix (MST, no DST) — set 2026-03-09 to avoid Anthropic DST bug
+
+---
+
+## Lessons Learned
+
+### Anthropic API DST Bug (2026-03-09)
+Anthropic API had a bug triggered by daylight saving time transitions (March 8, 2026 spring forward) that caused infinite loops on affected systems. Symptoms: massive response delays (20+ minutes), appearing like gateway/delivery issues but actually API hangs.
+
+**Workaround:** Changed workstation timezone to `America/Phoenix` (Arizona - no DST). Arizona doesn't observe daylight saving time, so it avoids the transition entirely.
+
+**Fix:** Temporary until Anthropic patches the bug. If we need to switch back to Pacific time later, verify the bug is resolved first.
+
+**Source:** Bug report shared by Adam on 2026-03-09.
 
 ---
 
