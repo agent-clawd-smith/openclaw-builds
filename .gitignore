@@ -1,3 +1,4 @@
+# Images and media
 agentshare_inbox/
 *.png
 *.jpeg
@@ -5,8 +6,26 @@ agentshare_inbox/
 screenshot_temp*
 latest_drop*
 imsg_photo*
+
+# PII / contacts
 family-contacts.json
-agentshare_inbox/
-*.jpeg
-*.jpg
+
+# Config with secrets
 openclaw.json
+
+# Secrets and credentials — NEVER commit
+secrets.json
+TOOLS.md
+*.pem
+auth-profiles.json
+credentials/
+
+# Symlinked repos (tracked in their own repos)
+polymarket
+observability
+podcast
+
+# Runtime state
+health-report.json
+system-state.json
+.openclaw/
