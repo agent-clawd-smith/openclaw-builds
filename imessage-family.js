@@ -97,11 +97,11 @@ function buildAgentMessage(msg, contacts) {
 }
 
 // Send agent response via imsg
+// SECURITY: Use spawnSync to avoid shell injection from response content
 function sendReply(identifier, response) {
-  // Escape single quotes
-  const safe = response.replace(/'/g, "'\\''");
+  const { spawnSync } = require('child_process');
   try {
-    run(`/opt/homebrew/bin/imsg send --to "${identifier}" --text '${safe}'`);
+    spawnSync('/opt/homebrew/bin/imsg', ['send', '--to', identifier, '--text', response], { encoding: 'utf8', timeout: 30000 });
     log(`Sent reply to ${identifier}`);
   } catch (e) {
     log(`ERROR sending to ${identifier}: ${e.message}`);
@@ -109,15 +109,21 @@ function sendReply(identifier, response) {
 }
 
 // Route message through OpenClaw agent
+// SECURITY: Use spawnSync to avoid shell injection from message content
 function routeToAgent(number, agentMessage, name) {
   log(`Routing message from ${name} (${number}) to agent`);
-  const safe = agentMessage.replace(/'/g, "'\\''").replace(/"/g, '\\"');
+  const { spawnSync } = require('child_process');
   try {
-    const result = run(
-      `/opt/homebrew/bin/openclaw agent --to "${number}" --deliver --reply-channel imessage --reply-to "${number}" --message "${safe}" --timeout 60`
-    );
+    const result = spawnSync('/opt/homebrew/bin/openclaw', [
+      'agent', '--to', number,
+      '--deliver', '--reply-channel', 'imessage', '--reply-to', number,
+      '--message', agentMessage, '--timeout', '60'
+    ], { encoding: 'utf8', timeout: 70000 });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.stdout || 'unknown error');
+    }
     log(`Agent response delivered for ${name}`);
-    return result;
+    return result.stdout;
   } catch (e) {
     log(`ERROR routing to agent for ${name}: ${e.message}`);
     return null;

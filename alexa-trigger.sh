@@ -2,7 +2,7 @@
 # Agent Smith Trigger Poller
 # Watches the Hubitat virtual switch and responds when Alexa triggers it
 
-TOKEN="3e52b9dc-bdcb-4793-8266-bffd9eff1088"
+TOKEN=$(python3 -c "import json; c=json.load(open('$HOME/.openclaw/secrets.json')); print(c['hubitat']['token'])")
 DEVICE_ID="112"
 API_BASE="http://10.0.0.53/apps/api/179"
 STATE_FILE="/tmp/agent-smith-trigger-state"

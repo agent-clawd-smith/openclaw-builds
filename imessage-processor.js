@@ -248,6 +248,15 @@ async function poll() {
       }
     }
 
+    // Drop lobster-prefixed messages (moltbook approval flow) — handled by moltbook-cron
+    const preLobster = newMessages.length;
+    const nonLobster = newMessages.filter(m => !m.text || !m.text.trim().startsWith('\u{1F99E}'));
+    if (nonLobster.length < preLobster) {
+      log(`  Skipping ${preLobster - nonLobster.length} lobster-prefixed message(s) (moltbook approval)`);
+      newMessages.splice(0, newMessages.length, ...nonLobster);
+      if (newMessages.length === 0) continue;
+    }
+
     // Send immediate ack so the person knows we're on it
     const acks = [
       "On it 👀",
@@ -264,6 +273,7 @@ async function poll() {
     const batchedMessages = getMessages(chatId, 15)
       .filter(m => !m.is_from_me && m.id > lastSeenId)
       .filter(m => !m.text || !m.text.trim().toLowerCase().startsWith('@agent'))
+      .filter(m => !m.text || !m.text.trim().startsWith('\u{1F99E}'))
       .sort((a, b) => a.id - b.id);
 
     // Update state to cover any new messages that arrived during wait

@@ -9,7 +9,7 @@
  * State is tracked so we don't reprocess old messages.
  */
 
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -48,8 +48,9 @@ function getChats() {
 
 function getMessages(chatId, limit = 20) {
   try {
-    return run(`${IMSG} history --chat-id ${chatId} --limit ${limit} --attachments --json`)
-      .split('\n').filter(Boolean).map(l => JSON.parse(l));
+    // SECURITY: Use spawnSync to avoid shell injection via chatId from iMessage data
+    const result = spawnSync(IMSG, ['history', '--chat-id', String(chatId), '--limit', String(limit), '--attachments', '--json'], { encoding: 'utf8', timeout: 60000 });
+    return (result.stdout || '').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
   } catch (e) { return []; }
 }
 

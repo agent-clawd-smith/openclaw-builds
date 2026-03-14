@@ -11,17 +11,21 @@ case "$1" in
   search)
     QUERY="$2"
     LIMIT="${3:-5}"
+    # Use jq to safely construct JSON, preventing injection via user input
+    JSON_BODY=$(jq -n --arg q "$QUERY" --argjson l "$LIMIT" '{query: $q, limit: $l}')
     curl -s -X POST "$BASE/search" \
       -H "Authorization: Bearer $FIRECRAWL_API_KEY" \
       -H "Content-Type: application/json" \
-      -d "{\"query\": \"$QUERY\", \"limit\": $LIMIT}"
+      -d "$JSON_BODY"
     ;;
   scrape)
     URL="$2"
+    # Use jq to safely construct JSON, preventing injection via user input
+    JSON_BODY=$(jq -n --arg u "$URL" '{url: $u, formats: ["markdown"]}')
     curl -s -X POST "$BASE/scrape" \
       -H "Authorization: Bearer $FIRECRAWL_API_KEY" \
       -H "Content-Type: application/json" \
-      -d "{\"url\": \"$URL\", \"formats\": [\"markdown\"]}"
+      -d "$JSON_BODY"
     ;;
   *)
     echo "Usage: $0 search <query> [limit]"
