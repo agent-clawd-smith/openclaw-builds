@@ -185,6 +185,38 @@ Collaborator: chuhalof (Adam)
 
 ## Lessons Learned
 
+### Weekly Digest: Check Live State First (2026-03-15)
+Sent a weekly intelligence digest based on 3 AM scan data without verifying current state. Reported "issues" (dashboard crash, uncommitted changes) that were either false alarms or already resolved by 8:54 AM. Adam rightly called this out.
+
+**Lesson:** Scan data is a starting point, not gospel. Before alerting about operational issues:
+1. Check live dashboard for current alerts
+2. Run fresh `git status` on repos
+3. Verify LaunchAgent status if reporting crashes
+4. 5+ hours can pass between scan and digest - things change
+
+Focus weekly digests on strategic insights (patterns, opportunities, project connections), not stale operational noise.
+
+### Podcast Syntax Error & Detection Gap (2026-03-16)
+Daily podcast cron failed silently for 2 days due to Python syntax error (unclosed f-string in script_writer.py line 92). Daily scan at 3 AM didn't catch it because openclaw cron status wasn't being captured.
+
+**Root causes:**
+1. Script error: Missing closing `"""` on system_prompt f-string
+2. Detection gap: daily-scan.sh used `.[]` instead of `.jobs[]` for openclaw cron list --json
+3. Timing: Daily scan once per day meant 24+ hour blind spots
+
+**Fixes applied:**
+1. Fixed syntax error in script_writer.py
+2. Updated daily-scan.sh to capture openclaw cron failures properly
+3. Added auto-triage handler for failed openclaw crons (iMessage alerts)
+4. Created health-monitor.sh (runs every 2 hours) for fast failure detection
+5. Added to crontab: `0 */2 * * * ~/.openclaw/workspace/health-monitor.sh`
+
+**Lesson:** Critical background jobs need failure detection faster than 24 hours. Two-tier approach works well:
+- Comprehensive daily scan (3 AM) for full system state
+- Lightweight health checks (every 2 hours) for service failures
+
+**Podbean issue:** Podcast description now includes source links, exceeding 500 char limit. Non-critical - MP3 generates fine, just doesn't auto-publish to Podbean.
+
 ### Anthropic API DST Bug (2026-03-09)
 Anthropic API had a bug triggered by daylight saving time transitions (March 8, 2026 spring forward) that caused infinite loops on affected systems. Symptoms: massive response delays (20+ minutes), appearing like gateway/delivery issues but actually API hangs.
 
