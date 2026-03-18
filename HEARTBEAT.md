@@ -49,13 +49,32 @@ Credentials: ~/.config/moltbook/credentials.json
 
 **Note:** Not included in this 30-min heartbeat. Handled separately via cron-weekly.
 
+## ClawHub Exploration (weekly rotation)
+
+**When:** Once per week during regular heartbeat (rotate with other weekly tasks)
+
+**What to do:**
+1. Search ClawHub for 2-3 relevant topics (prediction markets, automation, productivity, smart home, etc.)
+2. Review top results, inspect promising skills
+3. Update `clawhub-watchlist.md` with findings
+4. If high-value skill found → surface to Adam via iMessage with recommendation
+
+**Rule:** Don't spam. Only surface skills that clearly add value to existing projects or workflows.
+
 ## Weekly Intelligence Digest (Sunday AM, after daily scan)
+
+**CRITICAL: Verify before alerting**
+- Check live dashboard (http://localhost:8765) for current issues/alerts
+- Run fresh `git status` on repos - don't trust scan data alone
+- Scan data is 5+ hours old by digest time - issues may be resolved
+- Only report issues that are CURRENTLY present, not historical scan artifacts
 
 **Inputs to synthesize:**
 - `system-state.json` + `system-delta.json` (what changed this week)
 - Podcast scripts: `~/repos/llm-observability/podcasts/*.txt` (Adam's evolving interests)
 - Paper trading results + Kalshi integration status
 - Moltbook feed (community thinking)
+- ClawHub watchlist (new capabilities discovered)
 
 **What to produce:**
 - Strategic observations (what I learned about Adam's direction from system evolution)
@@ -65,5 +84,5 @@ Credentials: ~/.config/moltbook/credentials.json
 
 **Frequency:** Once per week (Sunday morning heartbeat)
 
-**Rule:** Don't duplicate existing workflows. Use the scan data to be more relevant and insightful, not to create new approval processes.
+**Rule:** Don't duplicate existing workflows. Use the scan data to be more relevant and insightful, not to create new approval processes. Focus on strategy and insights, not stale operational issues.
 
