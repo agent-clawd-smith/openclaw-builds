@@ -131,6 +131,28 @@ Workspace symlinks:
 
 Collaborator: chuhalof (Adam)
 
+## Strategic Recommendations System (2026-03-18) ✅
+**Repos:** llm-observability, workspace-tools
+- **Full dashboard tab** with approve/dismiss workflow (like Moltbook drafts)
+- Integrates ClawHub skill discovery + podcast insights + system state
+- Persistent state tracking (`recommendations-state.json`)
+- Generates recommendations during daily scan (3 AM)
+- Multi-source intelligence: ClawHub (weight 1.0), podcast (0.8), system (0.6)
+- API endpoints: `/api/recommendations`, `/api/recommendations/approve`, `/api/recommendations/dismiss`
+- Hero metrics: pending/approved/dismissed breakdown by source
+- Source badges (ClawHub/Podcast/System), priority indicators (high/medium/low)
+- Dismissed items hide for 7 days before resurfacing
+- Zero LLM cost - mechanical data gathering + lightweight ranking
+- **Live:** http://localhost:8765 → Recommendations tab
+- **Inspiration:** Parker Prompts' OpenClaw video (#4: ClawHub exploration, #6: self-improvement)
+
+### Corrections Log (2026-03-18) ✅
+- Self-improvement feedback loop in `corrections-log.md`
+- Tracks every correction from Adam
+- Makes learnings actionable, prevents repeat mistakes
+- Current entries: gateway warnings, message targeting, API hygiene, DST workaround, communication protocols
+- Review before major actions, update during heartbeats
+
 ## Daily System Awareness (2026-03-14) ✅
 **Repo:** https://github.com/agent-clawd-smith/llm-observability
 - `daily-scan.sh` — Mechanical scan (3 AM daily) captures infrastructure inventory, service health, repo status, podcast outputs, paper trading state
@@ -147,6 +169,16 @@ Collaborator: chuhalof (Adam)
 
 **Key insight:** Not everything needs an LLM turn. Mechanical scanning is efficient; LLM synthesis is strategic.
 **Dashboard URL:** http://localhost:8765 → System tab
+
+## Podcast Memory System (2026-03-21) ✅
+**Repos:** podcast-generator, llm-observability
+- **Daily extraction** (6:15 AM via system cron): Extracts memorable moments from previous episode → appends to podcast-memory.md (~$0.06/day)
+- **Weekly consolidation** (Sunday 4 AM via system cron): Distills entries, removes duplicates, tracks recurring themes (~$0.10/week)
+- **Script generation**: Loads memory context before writing, maintains speaker personalities and continuity
+- **Dashboard**: Memory Context section in Podcast tab shows current memory file (editable view planned)
+- **Bootstrap**: 600 words from last 7 episodes ($0.03)
+- **Cost**: ~$0.52/week total (cheaper than raw transcript injection at ~$1.05-1.60/week)
+- **Architecture decision**: System cron (mechanical) vs OpenClaw cron (agent orchestration) - keeps clean separation
 
 ## What's Been Built
 
